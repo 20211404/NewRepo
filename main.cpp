@@ -1,47 +1,13 @@
 #include <windows.h>
 #include <d3d11.h>
 #include <d3dcompiler.h>
-#include <iostream>
 #include <chrono>
+#include <vector>
+#include <string>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
-#pragma comment(linker, "/entry:WinMainCRTStartup /subsystem:console")
-
-class CPPGameTimer {
-public:
-    CPPGameTimer() {
-        prevTime = std::chrono::steady_clock::now();
-    }
-
-    float Update() {
-        auto currentTime = std::chrono::steady_clock::now();
-        std::chrono::duration<float> frameTime = currentTime - prevTime;
-        deltaTime = frameTime.count();
-        prevTime = currentTime;
-        return deltaTime;
-    }
-
-    float GetDeltaTime() const { return deltaTime; }
-
-private:
-    std::chrono::steady_clock::time_point prevTime;
-    float deltaTime = 0.0f;
-};
-
-typedef struct _Vertex {
-    float x, y, z;
-    float r, g, b, a;
-} Vertex;
-
-typedef struct _GameContext {
-    float playerX;
-    float playerY;
-    bool isRunning;
-    bool keyStates[256];
-} GameContext;
-
-GameContext g_Game = { 0.0f, 0.0f, true, {false} };
+#pragma comment(linker, "/entry:WinMainCRTStartup /subsystem:windows")
 
 ID3D11Device* g_pd3dDevice = nullptr;
 ID3D11DeviceContext* g_pImmediateContext = nullptr;
@@ -51,6 +17,11 @@ ID3D11VertexShader* g_pVertexShader = nullptr;
 ID3D11PixelShader* g_pPixelShader = nullptr;
 ID3D11InputLayout* g_pInputLayout = nullptr;
 ID3D11Buffer* g_pVertexBuffer = nullptr;
+
+struct Vertex {
+    float x, y, z;
+    float r, g, b, a;
+};
 
 const char* shaderSource = R"(
 struct VS_INPUT { float3 pos : POSITION; float4 col : COLOR; };
@@ -64,100 +35,240 @@ PS_INPUT VS(VS_INPUT input) {
 float4 PS(PS_INPUT input) : SV_Target { return input.col; }
 )";
 
-Vertex starVertices[] = {
-    {  0.0f,       0.5f,  0.5f,  1.0f, 1.0f, 1.0f, 1.0f },
-    {  0.433013f, -0.25f, 0.5f,  1.0f, 1.0f, 1.0f, 1.0f },
-    { -0.433013f, -0.25f, 0.5f,  1.0f, 1.0f, 1.0f, 1.0f },
-    {  0.0f,      -0.5f,  0.5f,  0.0f, 0.0f, 0.0f, 1.0f },
-    { -0.433013f,  0.25f, 0.5f,  0.0f, 0.0f, 0.0f, 1.0f },
-    {  0.433013f,  0.25f, 0.5f,  0.0f, 0.0f, 0.0f, 1.0f }
+class GameObject;
+
+class Component {
+public:
+    GameObject* pOwner = nullptr;
+    bool isStarted = false;
+
+    virtual void Start() = 0;
+    virtual void Input() {}
+    virtual void Update(float dt) = 0;
+    virtual void Render() {}
+
+    virtual ~Component() {}
+};
+
+class GameObject {
+public:
+    std::string name;
+    float x = 0.0f;
+    float y = 0.0f;
+    std::vector<Component*> components;
+
+    GameObject(std::string n) {
+        name = n;
+    }
+
+    ~GameObject() {
+        for (int i = 0; i < (int)components.size(); i++) {
+            delete components[i];
+        }
+    }
+
+    void AddComponent(Component* pComp) {
+        pComp->pOwner = this;
+        pComp->isStarted = false;
+        components.push_back(pComp);
+    }
+};
+
+class ControllerComponent : public Component {
+public:
+    int keyUp, keyDown, keyLeft, keyRight;
+    float speed;
+    bool moveUp, moveDown, moveLeft, moveRight;
+
+    ControllerComponent(int up, int down, int left, int right) {
+        keyUp = up; keyDown = down; keyLeft = left; keyRight = right;
+    }
+
+    void Start() override {
+        speed = 1.5f;
+        moveUp = moveDown = moveLeft = moveRight = false;
+    }
+
+    void Input() override {
+        moveUp = (GetAsyncKeyState(keyUp) & 0x8000);
+        moveDown = (GetAsyncKeyState(keyDown) & 0x8000);
+        moveLeft = (GetAsyncKeyState(keyLeft) & 0x8000);
+        moveRight = (GetAsyncKeyState(keyRight) & 0x8000);
+    }
+
+    void Update(float dt) override {
+        float velocityX = 0.0f;
+        float velocityY = 0.0f;
+
+        if (moveLeft)  velocityX -= speed;
+        if (moveRight) velocityX += speed;
+        if (moveUp)    velocityY += speed;
+        if (moveDown)  velocityY -= speed;
+
+        pOwner->x = pOwner->x + (velocityX * dt);
+        pOwner->y = pOwner->y + (velocityY * dt);
+
+        if (pOwner->x < -1.0f) pOwner->x = -1.0f;
+        if (pOwner->x > 1.0f)  pOwner->x = 1.0f;
+        if (pOwner->y < -1.0f) pOwner->y = -1.0f;
+        if (pOwner->y > 1.0f)  pOwner->y = 1.0f;
+    }
+};
+
+class RendererComponent : public Component {
+public:
+    Vertex localVertices[3];
+
+    RendererComponent(Vertex v1, Vertex v2, Vertex v3) {
+        localVertices[0] = v1;
+        localVertices[1] = v2;
+        localVertices[2] = v3;
+    }
+
+    void Start() override {}
+    void Update(float dt) override {}
+
+    void Render() override {
+        Vertex worldVertices[3];
+        for (int i = 0; i < 3; i++) {
+            worldVertices[i] = localVertices[i];
+            worldVertices[i].x += pOwner->x;
+            worldVertices[i].y += pOwner->y;
+        }
+
+        g_pImmediateContext->UpdateSubresource(g_pVertexBuffer, 0, nullptr, worldVertices, 0, 0);
+        g_pImmediateContext->Draw(3, 0);
+    }
+};
+
+class GameLoop {
+public:
+    bool isRunning;
+    std::vector<GameObject*> gameWorld;
+    std::chrono::high_resolution_clock::time_point prevTime;
+    float deltaTime;
+
+    GameLoop() { Initialize(); }
+    ~GameLoop() {
+        for (int i = 0; i < (int)gameWorld.size(); i++) {
+            delete gameWorld[i];
+        }
+    }
+
+    void Initialize() {
+        isRunning = true;
+        gameWorld.clear();
+        prevTime = std::chrono::high_resolution_clock::now();
+        deltaTime = 0.0f;
+    }
+
+    void Input() {
+        if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) {
+            isRunning = false;
+            PostQuitMessage(0);
+        }
+
+        static bool fKeyPrev = false;
+        bool fKeyCurr = (GetAsyncKeyState('F') & 0x8000);
+        if (fKeyCurr && !fKeyPrev) {
+            static bool isFullScreen = false;
+            isFullScreen = !isFullScreen;
+            if (g_pSwapChain) g_pSwapChain->SetFullscreenState(isFullScreen, nullptr);
+        }
+        fKeyPrev = fKeyCurr;
+
+        for (int i = 0; i < (int)gameWorld.size(); i++) {
+            for (int j = 0; j < (int)gameWorld[i]->components.size(); j++) {
+                gameWorld[i]->components[j]->Input();
+            }
+        }
+    }
+
+    void Update() {
+        for (int i = 0; i < (int)gameWorld.size(); i++) {
+            for (int j = 0; j < (int)gameWorld[i]->components.size(); j++) {
+                if (!gameWorld[i]->components[j]->isStarted) {
+                    gameWorld[i]->components[j]->Start();
+                    gameWorld[i]->components[j]->isStarted = true;
+                }
+            }
+        }
+
+        for (int i = 0; i < (int)gameWorld.size(); i++) {
+            for (int j = 0; j < (int)gameWorld[i]->components.size(); j++) {
+                gameWorld[i]->components[j]->Update(deltaTime);
+            }
+        }
+    }
+
+    void Render() {
+        float clearColor[] = { 0.1f, 0.2f, 0.4f, 1.0f };
+        g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, clearColor);
+        g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
+
+        UINT stride = sizeof(Vertex), offset = 0;
+        g_pImmediateContext->IASetInputLayout(g_pInputLayout);
+        g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
+        g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
+        g_pImmediateContext->PSSetShader(g_pPixelShader, nullptr, 0);
+
+        for (int i = 0; i < (int)gameWorld.size(); i++) {
+            for (int j = 0; j < (int)gameWorld[i]->components.size(); j++) {
+                gameWorld[i]->components[j]->Render();
+            }
+        }
+
+        g_pSwapChain->Present(0, 0);
+    }
+
+    void Run() {
+        MSG msg = { 0 };
+        while (isRunning) {
+            if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+                if (msg.message == WM_QUIT) isRunning = false;
+            }
+            else {
+                auto currentTime = std::chrono::high_resolution_clock::now();
+                std::chrono::duration<float> elapsed = currentTime - prevTime;
+                deltaTime = elapsed.count();
+                prevTime = currentTime;
+
+                Input();
+                Update();
+                Render();
+            }
+        }
+    }
 };
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
-    switch (message) {
-    case WM_KEYDOWN:
-        g_Game.keyStates[wParam] = true;
-        if (wParam >= 'A' && wParam <= 'Z') g_Game.keyStates[wParam + 32] = true;
-        break;
-    case WM_KEYUP:
-        g_Game.keyStates[wParam] = false;
-        if (wParam >= 'A' && wParam <= 'Z') g_Game.keyStates[wParam + 32] = false;
-        break;
-    case WM_DESTROY:
-        g_Game.isRunning = false;
+    if (message == WM_DESTROY) {
         PostQuitMessage(0);
-        break;
-    default: return DefWindowProc(hWnd, message, wParam, lParam);
+        return 0;
     }
-    return 0;
+    return DefWindowProc(hWnd, message, wParam, lParam);
 }
-
-void Update(float deltaTime) {
-    float speed = 1.0f;
-    float distance = speed * deltaTime;
-
-    if (g_Game.keyStates['a']) g_Game.playerX -= distance;
-    if (g_Game.keyStates['d']) g_Game.playerX += distance;
-    if (g_Game.keyStates['w']) g_Game.playerY += distance;
-    if (g_Game.keyStates['s']) g_Game.playerY -= distance;
-
-    if (g_Game.playerX < -1.0f) g_Game.playerX = -1.0f;
-    if (g_Game.playerX > 1.0f) g_Game.playerX = 1.0f;
-    if (g_Game.playerY < -1.0f) g_Game.playerY = -1.0f;
-    if (g_Game.playerY > 1.0f) g_Game.playerY = 1.0f;
-}
-
-void Render(float displayFPS, float deltaTime) {
-
-    system("cls");
-    printf("===     프레임레이트 표시중..     ===\n");
-    printf("FPS : %.2f \n", displayFPS); 
-    printf("DT  : %.4f sec\n", deltaTime);
-    printf("Pos : (%.2f, %.2f)\n", g_Game.playerX, g_Game.playerY);
-    printf("=====================================\n");
-
-    float clearColor[] = { 0.1f, 0.2f, 0.4f, 1.0f };
-    g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, clearColor);
-
-    Vertex currentVertices[6];
-    for (int i = 0; i < 6; i++) {
-        currentVertices[i] = starVertices[i];
-        currentVertices[i].x += g_Game.playerX;
-        currentVertices[i].y += g_Game.playerY;
-    }
-
-    g_pImmediateContext->UpdateSubresource(g_pVertexBuffer, 0, nullptr, currentVertices, 0, 0);
-
-    UINT stride = sizeof(Vertex), offset = 0;
-    g_pImmediateContext->IASetInputLayout(g_pInputLayout);
-    g_pImmediateContext->IASetVertexBuffers(0, 1, &g_pVertexBuffer, &stride, &offset);
-    g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    g_pImmediateContext->VSSetShader(g_pVertexShader, nullptr, 0);
-    g_pImmediateContext->PSSetShader(g_pPixelShader, nullptr, 0);
-
-    g_pImmediateContext->Draw(6, 0);
-    g_pSwapChain->Present(0, 0);
-}
-
 
 int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
-
     WNDCLASSEXW wcex = { sizeof(WNDCLASSEX) };
     wcex.lpfnWndProc = WndProc;
     wcex.hInstance = hInstance;
-    wcex.lpszClassName = L"Star600x600";
+    wcex.lpszClassName = L"Lecture04Engine";
     RegisterClassExW(&wcex);
 
-    RECT wr = { 0, 0, 600, 600 };
+    RECT wr = { 0, 0, 800, 600 };
     AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE);
 
-    HWND hWnd = CreateWindowW(L"Star600x600", L"Moving Star (600x600)", WS_OVERLAPPEDWINDOW,
+    HWND hWnd = CreateWindowW(L"Lecture04Engine", L"삼각형 두개 돌리기", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top, nullptr, nullptr, hInstance, nullptr);
     ShowWindow(hWnd, nCmdShow);
 
     DXGI_SWAP_CHAIN_DESC sd = { 0 };
     sd.BufferCount = 1;
-    sd.BufferDesc.Width = 600;
+    sd.BufferDesc.Width = 800;
     sd.BufferDesc.Height = 600;
     sd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
@@ -183,54 +294,46 @@ int APIENTRY WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLi
     };
     g_pd3dDevice->CreateInputLayout(layout, 2, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &g_pInputLayout);
 
-    D3D11_BUFFER_DESC bd = { sizeof(starVertices), D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0 };
-    D3D11_SUBRESOURCE_DATA initData = { starVertices, 0, 0 };
-    g_pd3dDevice->CreateBuffer(&bd, &initData, &g_pVertexBuffer);
+    D3D11_BUFFER_DESC bd = { sizeof(Vertex) * 3, D3D11_USAGE_DEFAULT, D3D11_BIND_VERTEX_BUFFER, 0, 0, 0 };
+    g_pd3dDevice->CreateBuffer(&bd, nullptr, &g_pVertexBuffer);
 
-    D3D11_VIEWPORT vp = { 0, 0, 600.0f, 600.0f, 0.0f, 1.0f };
+    D3D11_VIEWPORT vp = { 0, 0, 800.0f, 600.0f, 0.0f, 1.0f };
     g_pImmediateContext->RSSetViewports(1, &vp);
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
 
-    CPPGameTimer timer;
-    const float TARGET_FRAME_TIME = 1.0f / 45.0f;
-    float timeSinceLastFrame = 0.0f;
+    GameLoop gLoop;
 
-    float fpsTimeAccumulator = 0.0f;
-    int frameCount = 0;
-    float displayFPS = 0.0f;
+    GameObject* player1 = new GameObject("Player1");
+    player1->x = 0.5f;
+    player1->AddComponent(new ControllerComponent(VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT));
+    player1->AddComponent(new RendererComponent(
+        Vertex{ 0.0f,   0.385f, 0.5f,  1.0f, 1.0f, 1.0f, 1.0f }, 
+        Vertex{ 0.25f, -0.192f, 0.5f,  1.0f, 1.0f, 1.0f, 1.0f }, 
+        Vertex{ -0.25f, -0.192f, 0.5f,  1.0f, 1.0f, 1.0f, 1.0f }  
+    ));
+    gLoop.gameWorld.push_back(player1);
 
-    MSG msg = { 0 };
-    while (g_Game.isRunning) {
-        if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-            if (msg.message == WM_QUIT) g_Game.isRunning = false;
-        }
-        else {
-            float dt = timer.Update();
-            timeSinceLastFrame += dt;
+    GameObject* player2 = new GameObject("Player2");
+    player2->x = -0.5f;
+    player2->AddComponent(new ControllerComponent('W', 'S', 'A', 'D'));
+    player2->AddComponent(new RendererComponent(
+        Vertex{ 0.0f,  -0.385f, 0.5f,  0.0f, 0.0f, 0.0f, 1.0f }, 
+        Vertex{ -0.25f,  0.192f, 0.5f,  0.0f, 0.0f, 0.0f, 1.0f }, 
+        Vertex{ 0.25f,  0.192f, 0.5f,  0.0f, 0.0f, 0.0f, 1.0f } 
+    ));
+    gLoop.gameWorld.push_back(player2);
 
-            if (timeSinceLastFrame >= TARGET_FRAME_TIME) {
-                Update(timeSinceLastFrame);
+    gLoop.Run();
 
-                frameCount++;                      
-                fpsTimeAccumulator += timeSinceLastFrame; 
+    if (g_pVertexBuffer) g_pVertexBuffer->Release();
+    if (g_pInputLayout) g_pInputLayout->Release();
+    if (g_pVertexShader) g_pVertexShader->Release();
+    if (g_pPixelShader) g_pPixelShader->Release();
+    if (g_pRenderTargetView) g_pRenderTargetView->Release();
+    if (g_pSwapChain) g_pSwapChain->Release();
+    if (g_pImmediateContext) g_pImmediateContext->Release();
+    if (g_pd3dDevice) g_pd3dDevice->Release();
+    if (vsBlob) vsBlob->Release();
+    if (psBlob) psBlob->Release();
 
-                if (fpsTimeAccumulator >= 1.0f) {
-                    displayFPS = (float)frameCount / fpsTimeAccumulator;
-                    frameCount = 0;               
-                    fpsTimeAccumulator -= 1.0f;   
-                }
-
-                Render(displayFPS, timeSinceLastFrame);
-
-                timeSinceLastFrame = 0.0f;
-            }
-            else {
-                Sleep(1);
-            }
-        }
-    }
-    return (int)msg.wParam;
+    return 0;
 }
-//dd
